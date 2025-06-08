@@ -1,9 +1,9 @@
 {
-  "name": "shopee-send-data",
-  "displayName": "Shopee send data",
-  "version": "0.0.1",
-  "description": "A basic Plasmo extension.",
-  "author": "Plasmo Corp. <foss@plasmo.com>",
+  "name": "shopee-data-extractor",
+  "displayName": "Shopee Data Extractor for SheetDB",
+  "version": "1.0.0",
+  "description": "Extract Shopee Seller Center campaign data and send to Google Sheets via SheetDB",
+  "author": "Your Name",
   "scripts": {
     "dev": "plasmo dev",
     "build": "plasmo build",
@@ -25,10 +25,14 @@
   },
   "manifest": {
     "host_permissions": [
-      "https://*/*"
+      "https://*.shopee.co.id/*"
     ],
     "permissions": [
-      "tabs"
+      "tabs",
+      "cookies",
+      "storage",
+      "activeTab",
+      "downloads"
     ]
   }
 }
