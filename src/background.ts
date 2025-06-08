@@ -95,6 +95,7 @@ async function handleShopeeDataFetch(params: {
   limit: number
   fetchMode?: string
   disablePagination?: boolean
+  fetchDailyData?: boolean
 }) {
   try {
     // Ensure timestamps follow Shopee's format:
@@ -106,7 +107,8 @@ async function handleShopeeDataFetch(params: {
       original: { start: params.startTime, end: params.endTime },
       adjusted: { start: startTime, end: endTime },
       startDate: new Date(startTime * 1000).toISOString(),
-      endDate: new Date(endTime * 1000).toISOString()
+      endDate: new Date(endTime * 1000).toISOString(),
+      fetchDailyData: params.fetchDailyData
     })
 
     // First, get cookies from the Shopee tab
@@ -131,54 +133,140 @@ async function handleShopeeDataFetch(params: {
     const domainCookies = await chrome.cookies.getAll({ domain: ".shopee.co.id" })
     const cookieString = domainCookies.map(c => `${c.name}=${c.value}`).join('; ')
 
-    // If campaign type is empty, fetch multiple types
     let allCampaigns: any[] = []
     
-    if (params.campaignType === "") {
-      // Based on Shopee's actual behavior: using "new_cpc_homepage" with state "all"
-      // returns ALL campaigns across all types in a single request
-      console.log('Fetching all campaigns with single request...')
+    // Check if we need to fetch daily data
+    if (params.fetchDailyData) {
+      console.log('Fetching daily breakdown data...')
       
-      try {
+      // Calculate number of days
+      const startDate = new Date(startTime * 1000)
+      const endDate = new Date(endTime * 1000)
+      const currentDate = new Date(startDate)
+      
+      let dayCount = 0
+      const totalDays = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1
+      
+      console.log(`Will fetch data for ${totalDays} days`)
+      
+      // Fetch data for each day
+      while (currentDate <= endDate) {
+        dayCount++
+        const dayStart = getStartOfDay(currentDate.getTime() / 1000)
+        const dayEnd = getEndOfDay(currentDate.getTime() / 1000)
+        
+        console.log(`Fetching data for day ${dayCount}/${totalDays}: ${currentDate.toLocaleDateString('id-ID')}`)
+        
+        try {
+          let dayCampaigns: any[] = []
+          
+          if (params.campaignType === "") {
+            // Fetch all campaign types for this day
+            dayCampaigns = await fetchCampaignsByType({
+              startTime: dayStart,
+              endTime: dayEnd,
+              campaignType: "new_cpc_homepage",
+              state: "all",
+              offset: params.offset,
+              limit: params.limit,
+              spcCds,
+              cookieString,
+              disablePagination: params.disablePagination
+            })
+          } else {
+            // Fetch specific campaign type for this day
+            dayCampaigns = await fetchCampaignsByType({
+              ...params,
+              startTime: dayStart,
+              endTime: dayEnd,
+              spcCds,
+              cookieString,
+              disablePagination: params.disablePagination
+            })
+          }
+          
+          // Add the specific date to each campaign data
+          dayCampaigns = dayCampaigns.map(campaign => ({
+            ...campaign,
+            data_date: currentDate.getTime() / 1000 // Add timestamp for this specific date
+          }))
+          
+          allCampaigns = allCampaigns.concat(dayCampaigns)
+          
+          console.log(`Day ${dayCount}: Found ${dayCampaigns.length} campaigns`)
+          
+        } catch (error) {
+          console.error(`Failed to fetch data for ${currentDate.toLocaleDateString('id-ID')}:`, error.message)
+          // Continue with next day even if one fails
+        }
+        
+        // Move to next day
+        currentDate.setDate(currentDate.getDate() + 1)
+        
+        // Add delay to avoid rate limiting (1 second between requests)
+        if (currentDate <= endDate) {
+          await new Promise(resolve => setTimeout(resolve, 1000))
+        }
+      }
+      
+      console.log(`Daily data fetch complete: Total ${allCampaigns.length} records from ${totalDays} days`)
+      
+    } else {
+      // Original logic for fetching aggregate data
+      if (params.campaignType === "") {
+        console.log('Fetching all campaigns with single request...')
+        
+        try {
+          allCampaigns = await fetchCampaignsByType({
+            startTime,
+            endTime,
+            campaignType: "new_cpc_homepage",
+            state: "all",
+            offset: params.offset,
+            limit: params.limit,
+            spcCds,
+            cookieString,
+            disablePagination: params.disablePagination
+          })
+          
+          console.log(`Total campaigns fetched: ${allCampaigns.length}`)
+        } catch (error) {
+          console.error('Failed to fetch campaigns:', error.message)
+          throw error
+        }
+      } else {
+        // Fetch specific campaign type
         allCampaigns = await fetchCampaignsByType({
+          ...params,
           startTime,
           endTime,
-          campaignType: "new_cpc_homepage", // This actually returns ALL campaigns
-          state: "all", // Must be "all" to get everything
-          offset: params.offset,
-          limit: params.limit,
           spcCds,
           cookieString,
           disablePagination: params.disablePagination
         })
-        
-        console.log(`Total campaigns fetched: ${allCampaigns.length}`)
-      } catch (error) {
-        console.error('Failed to fetch campaigns:', error.message)
-        throw error
       }
-    } else {
-      // Fetch specific campaign type
-      allCampaigns = await fetchCampaignsByType({
-        ...params,
-        startTime,
-        endTime,
-        spcCds,
-        cookieString,
-        disablePagination: params.disablePagination
-      })
     }
 
     // Get SheetDB configuration from storage
     const config = await chrome.storage.local.get(['sheetDBConfig'])
     if (config.sheetDBConfig?.apiUrl) {
-      await sendToSheetDB(allCampaigns, config.sheetDBConfig)
+      await sendToSheetDB(allCampaigns, {
+        ...config.sheetDBConfig,
+        dateRange: {
+          start: startTime,
+          end: endTime
+        }
+      })
     }
 
     // Store the raw data for potential CSV download
     await chrome.storage.local.set({ 
       lastFetchedData: allCampaigns,
-      lastFetchedTime: new Date().toISOString()
+      lastFetchedTime: new Date().toISOString(),
+      lastFetchedDateRange: {
+        start: startTime,
+        end: endTime
+      }
     })
 
     return {
@@ -187,7 +275,9 @@ async function handleShopeeDataFetch(params: {
         entry_list: allCampaigns,
         total: allCampaigns.length
       },
-      message: `Successfully fetched ${allCampaigns.length} campaigns`
+      message: params.fetchDailyData 
+        ? `Successfully fetched ${allCampaigns.length} daily records`
+        : `Successfully fetched ${allCampaigns.length} campaigns`
     }
 
   } catch (error) {
@@ -328,7 +418,7 @@ async function fetchCampaignsByType(params: {
   return allCampaigns
 }
 
-async function sendToSheetDB(campaigns: any[], config: { apiUrl: string, sheetName?: string, dataMode?: string, updateMode?: string, shopName?: string }) {
+async function sendToSheetDB(campaigns: any[], config: { apiUrl: string, sheetName?: string, dataMode?: string, updateMode?: string, shopName?: string, dateRange?: { start: number, end: number } }) {
   if (!config.apiUrl) {
     throw new Error('SheetDB API URL not configured')
   }
@@ -446,6 +536,7 @@ async function sendToSheetDB(campaigns: any[], config: { apiUrl: string, sheetNa
         'tampilan_iklan': String(report.impression || 0),
         'jumlah_klik': String(report.click || 0),
         'biaya': formatCurrency(report.cost),
+        'tanggal_data': formatDate(entry.data_date || config.dateRange?.start),
         'tanggal_ekstrak': new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })
       }
     }
@@ -466,6 +557,7 @@ async function sendToSheetDB(campaigns: any[], config: { apiUrl: string, sheetNa
       'penempatan_iklan': getPlacement(entry.manual_product_ads, entry.manual_shop_ads),
       'tanggal_mulai': formatDate(campaign.start_time),
       'tanggal_selesai': formatDate(campaign.end_time),
+      'tanggal_data': formatDate(entry.data_date || config.dateRange?.start),
       'dilihat': String(report.impression || 0),
       'jumlah_klik': String(report.click || 0),
       'persentase_klik': formatPercentage(report.ctr),
@@ -629,7 +721,7 @@ async function generateCSVDownload(campaigns: any[]) {
   try {
     if (!campaigns || campaigns.length === 0) {
       // Try to get from storage
-      const stored = await chrome.storage.local.get(['lastFetchedData'])
+      const stored = await chrome.storage.local.get(['lastFetchedData', 'lastFetchedDateRange'])
       campaigns = stored.lastFetchedData || []
     }
     
@@ -731,6 +823,7 @@ async function testSheetDB(config: { apiUrl: string, sheetName?: string, dataMod
         'tampilan_iklan': '1000',
         'jumlah_klik': '50',
         'biaya': '50000',
+        'tanggal_data': '07/02/2025',
         'tanggal_ekstrak': new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })
       }
     ]
@@ -751,6 +844,7 @@ async function testSheetDB(config: { apiUrl: string, sheetName?: string, dataMod
         'penempatan_iklan': 'semua',
         'tanggal_mulai': '01/02/2025',
         'tanggal_selesai': '07/02/2025',
+        'tanggal_data': '07/02/2025',
         'dilihat': '1000',
         'jumlah_klik': '50',
         'persentase_klik': '5',

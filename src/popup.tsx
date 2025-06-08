@@ -48,10 +48,14 @@ function IndexPopup() {
   const [message, setMessage] = useState("")
   const [progress, setProgress] = useState("")
   const [dateRange, setDateRange] = useState(7) // Default 7 days
+  const [customStartDate, setCustomStartDate] = useState("")
+  const [customEndDate, setCustomEndDate] = useState("")
+  const [useCustomDate, setUseCustomDate] = useState(false)
   const [campaignType, setCampaignType] = useState("") // Empty string for all
   const [campaignState, setCampaignState] = useState("all")
   const [limit, setLimit] = useState(50) // Default 50 like Shopee
-  const [enablePagination, setEnablePagination] = useState(true) // Default on for > 50 data
+  const [enablePagination, setEnablePagination] = useState(false) // Default off - changed from true
+  const [fetchDailyData, setFetchDailyData] = useState(false) // New state for daily data sync
   const [lastFetchedCount, setLastFetchedCount] = useState(0)
   const [sheetDBConfig, setSheetDBConfig] = useState({
     apiUrl: "", // SheetDB API URL
@@ -62,9 +66,15 @@ function IndexPopup() {
   })
 
   const fetchShopeeData = async () => {
+    // Validate custom date range
+    if (useCustomDate && (!customStartDate || !customEndDate)) {
+      setMessage("❌ Error: Pilih tanggal mulai dan tanggal akhir terlebih dahulu")
+      return
+    }
+    
     setLoading(true)
     setMessage("")
-    setProgress(campaignType === "" ? "Fetching all campaigns..." : "")
+    setProgress(fetchDailyData ? "Memulai sinkronisasi data harian..." : campaignType === "" ? "Fetching all campaigns..." : "")
 
     try {
       // Calculate date range following Shopee's actual format
@@ -73,7 +83,16 @@ function IndexPopup() {
       
       const now = new Date()
       
-      if (dateRange === 1) {
+      if (useCustomDate && customStartDate && customEndDate) {
+        // Custom date range
+        const startDate = new Date(customStartDate)
+        startDate.setHours(0, 0, 0, 0)
+        startTime = Math.floor(startDate.getTime() / 1000)
+        
+        const endDate = new Date(customEndDate)
+        endDate.setHours(23, 59, 59, 999)
+        endTime = Math.floor(endDate.getTime() / 1000)
+      } else if (dateRange === 1) {
         // Today: from 00:00:00 today to 23:59:59 today
         const today = new Date(now)
         today.setHours(0, 0, 0, 0)
@@ -122,12 +141,22 @@ function IndexPopup() {
           state: campaignState,
           offset: 0,
           limit,
-          disablePagination: !enablePagination
+          disablePagination: !enablePagination,
+          fetchDailyData
         }
       })
 
       if (response.success) {
-        setMessage(`✅ ${response.message}`)
+        const startDateStr = new Date(startTime * 1000).toLocaleDateString('id-ID')
+        const endDateStr = new Date(endTime * 1000).toLocaleDateString('id-ID') 
+        
+        if (fetchDailyData) {
+          const dayCount = Math.ceil((endTime - startTime) / 86400) + 1
+          setMessage(`✅ ${response.message}\nPeriode: ${startDateStr} - ${endDateStr}\nTotal ${dayCount} hari data terpisah`)
+        } else {
+          setMessage(`✅ ${response.message}\nPeriode data: ${startDateStr} - ${endDateStr}`)
+        }
+        
         setLastFetchedCount(response.data.entry_list.length)
       } else {
         setMessage(`❌ Error: ${response.error}`)
@@ -187,14 +216,105 @@ function IndexPopup() {
         
         <div className="form-group">
           <label>Date Range:</label>
-          <select value={dateRange} onChange={(e) => setDateRange(Number(e.target.value))}>
+          <select value={useCustomDate ? 0 : dateRange} onChange={(e) => {
+            const value = Number(e.target.value)
+            if (value === 0) {
+              setUseCustomDate(true)
+              // Set default custom dates if not already set
+              if (!customStartDate) {
+                const defaultStart = new Date()
+                defaultStart.setDate(defaultStart.getDate() - 6) // 7 days ago
+                setCustomStartDate(defaultStart.toISOString().split('T')[0])
+              }
+              if (!customEndDate) {
+                setCustomEndDate(new Date().toISOString().split('T')[0]) // Today
+              }
+            } else {
+              setUseCustomDate(false)
+              setDateRange(value)
+            }
+          }}>
             <option value={1}>Today</option>
             <option value={2}>Yesterday</option>
             <option value={7}>Last 7 days</option>
             <option value={14}>Last 14 days</option>
             <option value={30}>Last 30 days</option>
+            <option value={0}>Custom Range</option>
           </select>
+          <small style={{ display: 'block', marginTop: '4px', color: '#6b7280' }}>
+            {!useCustomDate && dateRange === 1 && `Data hari ini: ${new Date().toLocaleDateString('id-ID')}`}
+            {!useCustomDate && dateRange === 2 && `Data kemarin: ${new Date(Date.now() - 86400000).toLocaleDateString('id-ID')}`}
+            {!useCustomDate && dateRange > 2 && `Data ${dateRange} hari terakhir: ${new Date(Date.now() - (dateRange - 1) * 86400000).toLocaleDateString('id-ID')} - ${new Date().toLocaleDateString('id-ID')}`}
+            {useCustomDate && customStartDate && customEndDate && `Custom: ${new Date(customStartDate).toLocaleDateString('id-ID')} - ${new Date(customEndDate).toLocaleDateString('id-ID')}`}
+          </small>
         </div>
+
+        {useCustomDate && (
+          <>
+            <div className="form-group">
+              <label>Tanggal Mulai:</label>
+              <input 
+                type="date"
+                value={customStartDate}
+                onChange={(e) => setCustomStartDate(e.target.value)}
+                max={customEndDate || new Date().toISOString().split('T')[0]}
+                required
+              />
+              <small style={{ display: 'block', marginTop: '4px', color: '#6b7280' }}>
+                Pilih tanggal awal periode data
+              </small>
+            </div>
+
+            <div className="form-group">
+              <label>Tanggal Akhir:</label>
+              <input 
+                type="date"
+                value={customEndDate}
+                onChange={(e) => setCustomEndDate(e.target.value)}
+                min={customStartDate}
+                max={new Date().toISOString().split('T')[0]}
+                required
+              />
+              <small style={{ display: 'block', marginTop: '4px', color: '#6b7280' }}>
+                Pilih tanggal akhir periode data (maks: hari ini)
+              </small>
+            </div>
+            
+            {customStartDate && customEndDate && (
+              <div style={{ 
+                padding: '8px 12px', 
+                background: '#f3f4f6', 
+                borderRadius: '6px', 
+                fontSize: '13px',
+                color: '#4b5563',
+                marginTop: '8px'
+              }}>
+                <strong>Total periode:</strong> {
+                  (() => {
+                    const start = new Date(customStartDate)
+                    const end = new Date(customEndDate)
+                    const diffTime = Math.abs(end.getTime() - start.getTime())
+                    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1
+                    return `${diffDays} hari`
+                  })()
+                }
+                {fetchDailyData && (
+                  <span style={{ color: '#ef4444', display: 'block', marginTop: '4px' }}>
+                    ⚠️ Akan melakukan {
+                      (() => {
+                        const start = new Date(customStartDate)
+                        const end = new Date(customEndDate)
+                        const diffTime = Math.abs(end.getTime() - start.getTime())
+                        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1
+                        return diffDays
+                      })()
+                    } request terpisah
+                  </span>
+                )}
+              </div>
+            )}
+          </>
+        )}
 
         <div className="form-group">
           <label>Campaign Type:</label>
@@ -239,6 +359,21 @@ function IndexPopup() {
           </label>
           <small style={{ display: 'block', marginTop: '4px', color: '#6b7280' }}>
             Automatically fetch all data if more than {limit} campaigns exist
+          </small>
+        </div>
+
+        <div className="form-group">
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <input 
+              type="checkbox" 
+              checked={fetchDailyData}
+              onChange={(e) => setFetchDailyData(e.target.checked)}
+            />
+            Sinkronisasi data per hari
+          </label>
+          <small style={{ display: 'block', marginTop: '4px', color: '#6b7280' }}>
+            Fetch data untuk setiap hari secara terpisah dengan kolom tanggal_data<br/>
+            <span style={{ color: '#ef4444' }}>⚠️ Proses lebih lama untuk range tanggal banyak</span>
           </small>
         </div>
       </div>
